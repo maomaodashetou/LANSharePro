@@ -104,7 +104,7 @@ pyinstaller --noconfirm --onefile --windowed ^
 ```
 LANSharePro.py      主程序：HTTP 服务 + Tkinter 界面
 version_info.txt    exe 版本资源（作者 / 版权 / 产品名）
-assets/             logo.ico、logo.png、logo_64.png
+assets/             logo.ico（exe 图标）、logo_64.png（界面与网页 logo）
 docs/images/        README 用截图
 LICENSE             MIT 许可证
 ```

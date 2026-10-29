@@ -105,7 +105,7 @@ runtime via `sys._MEIPASS` (no absolute paths).
 ```
 LANSharePro.py      main program: HTTP server + Tkinter UI
 version_info.txt    exe version resource (author / copyright / product)
-assets/             logo.ico, logo.png, logo_64.png
+assets/             logo.ico (exe icon), logo_64.png (UI & web logo)
 docs/images/        screenshots used by the README
 LICENSE             MIT
 ```
