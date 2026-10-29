@@ -1,0 +1,29 @@
+# PyInstaller 版本信息资源：写入 exe 属性 -> 详细信息，作者与版权信息在系统里可见
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 4, 0, 0),
+    prodvers=(1, 4, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('080404b0', [
+        StringStruct('CompanyName', '陈科雄'),
+        StringStruct('FileDescription', 'LANShare Pro - 局域网文件直链分享'),
+        StringStruct('FileVersion', '1.4.0.0'),
+        StringStruct('InternalName', 'LANSharePro'),
+        StringStruct('LegalCopyright', 'Copyright (C) 2026 陈科雄  kexiongchen@gmail.com'),
+        StringStruct('OriginalFilename', 'LANSharePro.exe'),
+        StringStruct('ProductName', 'LANShare Pro'),
+        StringStruct('ProductVersion', '1.4.0.0'),
+        StringStruct('Comments', 'MIT License - https://github.com/maomaodashetou/LANSharePro')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)
