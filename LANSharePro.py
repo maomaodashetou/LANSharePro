@@ -11,6 +11,7 @@ Project: https://github.com/maomaodashetou/LANSharePro
 
 import atexit
 import base64
+import collections
 import math
 import os
 import queue
@@ -866,8 +867,7 @@ class App(tk.Tk):
         self.speed_var = tk.StringVar(value="0 B/s")
         self.conn_var = tk.StringVar(value="0 / 0")
 
-        self._last_bytes = 0
-        self._last_time = time.time()
+        self._speed_samples = collections.deque(maxlen=20)
         self._logo = None
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1057,8 +1057,8 @@ class App(tk.Tk):
         self.stop_btn.set_enabled(True)
         self.choose_btn.set_enabled(False)
         self.port_entry.set_enabled(False)
-        self._last_bytes = 0
-        self._last_time = time.time()
+        self._speed_samples.clear()
+        self._speed_samples.append((time.time(), 0))
         self._write_log("共享路径  %s" % path)
 
     def _stop(self):
@@ -1069,6 +1069,7 @@ class App(tk.Tk):
         self.sent_var.set("0 B")
         self.speed_var.set("0 B/s")
         self.conn_var.set("0 / 0")
+        self._speed_samples.clear()
         self.start_btn.set_enabled(True)
         self.stop_btn.set_enabled(False)
         self.choose_btn.set_enabled(True)
@@ -1115,12 +1116,12 @@ class App(tk.Tk):
         if self.server is not None:
             sent, active, total = self.server.snapshot()
             now = time.time()
-            dt = now - self._last_time
-            if dt >= 0.4:
-                speed = (sent - self._last_bytes) / dt
-                self.speed_var.set(human_size(speed) + "/s")
-                self._last_bytes = sent
-                self._last_time = now
+            self._speed_samples.append((now, sent))
+            if len(self._speed_samples) > 1:
+                t0, b0 = self._speed_samples[0]
+                span = now - t0
+                if span > 0.2:
+                    self.speed_var.set(human_size((sent - b0) / span) + "/s")
             self.sent_var.set(human_size(sent))
             self.conn_var.set("%d / %d" % (active, total))
 
