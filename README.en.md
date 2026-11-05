@@ -24,6 +24,9 @@ Nothing leaves your local network. No cloud, no accounts, no third-party service
 ## Features
 
 - **File or folder mode** — share a single file as a direct link, or a whole directory tree to browse.
+- **Folder sizes at a glance** — each directory shows its total size and file count, and the ZIP button shows
+  the estimated archive size.
+- **Download progress** — clicking download opens a floating card with percentage, speed and ETA.
 - **Direct download links** — `http://your-ip:port/download`, `Range` requests supported, works with IDM / Thunder.
 - **One-click ZIP** — every directory page has "Download this folder (ZIP)", streamed on the fly with no temp file on disk.
 - **Chinese-friendly filenames** — `Content-Disposition` per RFC 5987, so non-ASCII names survive.
@@ -127,6 +130,17 @@ Check that both devices are on the same subnet, that the firewall allows the por
 **Port already in use?**
 Pick another port (e.g. 9000) and start again; the error dialog tells you when the port is taken.
 
+**Both Ethernet and Wi-Fi are connected, but only one side can open the page.**
+The adapters sit on different subnets, so each side needs its own address — the app lists one URL per
+adapter under "其他网卡的地址". If the address is right but the page still does not load, it is usually
+Windows Firewall: Wi-Fi is often classified as *Public*, while inbound is only allowed on *Private*.
+
+1. Set that Wi-Fi to *Private*: Settings → Network & Internet → Wi-Fi → network → Network profile → Private;
+2. Or allow the app for all profiles from an elevated PowerShell:
+   `netsh advfirewall firewall add rule name="LANShare Pro" dir=in action=allow program="D:\path\to\LANSharePro.exe" profile=any`
+
+Some corporate/public Wi-Fi also enables AP isolation, which blocks device-to-device traffic entirely.
+
 **Does the ZIP download support resume?**
 Single-file downloads do. The ZIP is generated on the fly, so an interrupted archive must restart.
 
@@ -136,6 +150,8 @@ can rebuild it yourself with the command above.
 
 ## Changelog
 
+- **1.5** — per-folder size and file count, estimated ZIP size, floating download card with progress /
+  speed / ETA, and every NIC listed with its adapter name (physical adapters first).
 - **1.4** — Apple-style UI (rounded cards/buttons/inputs), light borders, author info in the log
   header and web footer, exe version resource; rebuilt with Python 3.8 for Windows 7 support.
 - **1.3** — unified button style, single "Select" entry, logo on the web pages, icon cache fix.

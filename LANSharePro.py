@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LANShare Pro 1.4
+"""LANShare Pro 1.5
 
 把一个任意类型的文件，或一个文件夹（含全部子目录），以 HTTP 直链形式共享到局域网，
 同网段的人用浏览器打开链接即可浏览、直接下载，支持断点续传（Range）。
@@ -15,7 +15,9 @@ import collections
 import math
 import os
 import queue
+import re
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -30,7 +32,7 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 APP_NAME = "LANShare Pro"
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 APP_AUTHOR = "陈科雄"
 APP_EMAIL = "kexiongchen@gmail.com"
 APP_REPO = "https://github.com/maomaodashetou/LANSharePro"
@@ -44,8 +46,80 @@ def resource_dir():
     return os.path.join(base, "assets")
 
 
-def get_lan_ips():
-    """返回本机所有非回环 IPv4 地址，首个为主用地址。"""
+def _ipconfig_adapters():
+    """解析 ipconfig，返回 [(网卡名, [IPv4...])]，含已连接的虚拟网卡。"""
+    flags = 0x08000000 if hasattr(subprocess, "DEVNULL") else 0  # CREATE_NO_WINDOW
+    try:
+        out = subprocess.check_output(
+            ["ipconfig"], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=flags, timeout=8,
+        )
+    except Exception:
+        return []
+    try:
+        text = out.decode("mbcs", "replace")
+    except Exception:
+        text = out.decode("utf-8", "replace")
+
+    adapters = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not raw.startswith((" ", "\t")) and line.endswith(":"):
+            name = line[:-1]
+            for kw in ("适配器", "adapter", "Adapter", "adapter "):
+                if kw in name:
+                    name = name.split(kw, 1)[1].strip() or name
+                    break
+            adapters.append({"name": name, "ips": [], "up": True, "gw": False})
+            continue
+        if not adapters:
+            continue
+        if "媒体已断开" in line or "Media disconnected" in line:
+            adapters[-1]["up"] = False
+        if "默认网关" in line or "Default Gateway" in line:
+            if re.search(r"\d{1,3}(\.\d{1,3}){3}", line):
+                adapters[-1]["gw"] = True
+        found = None
+        for kw in ("IPv4", "IPv4 地址", "IPv4 Address", "IPv4-Adresse"):
+            idx = line.find(kw)
+            if idx >= 0:
+                found = line[idx:]
+                break
+        if found:
+            parts = found.rsplit(":", 1)[-1].strip().split("(")[0].strip()
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", parts):
+                if not parts.startswith(("127.", "169.254.")):
+                    adapters[-1]["ips"].append(parts)
+    return [(a["name"], a["ips"], a["gw"]) for a in adapters if a["up"] and a["ips"]]
+
+
+_VIRTUAL_HINTS = ("vmware", "virtualbox", "vethernet", "hyper-v", "loopback", "tap-",
+                  "bluetooth", "wsl", "npcap", "virtual")
+_PHYSICAL_HINTS = ("以太网", "wlan", "wi-fi", "wifi", "ethernet", "wireless", "无线")
+
+
+def get_lan_ads():
+    """返回 [(网卡名, IPv4)]，首个为主用地址（优先物理网卡、有默认网关的）。"""
+    raw = []
+    for name, ips, has_gw in _ipconfig_adapters():
+        for ip in ips:
+            raw.append((name, ip, has_gw))
+
+    if raw:
+        def rank(item):
+            name = item[0].lower()
+            virtual = any(h in name for h in _VIRTUAL_HINTS)
+            physical = any(h in name for h in _PHYSICAL_HINTS)
+            return (0 if physical else 1, 1 if virtual else 0, 0 if item[2] else 1)
+
+        raw.sort(key=rank)
+        ads = []
+        for name, ip, _ in raw:
+            if ip not in [x[1] for x in ads]:
+                ads.append((name, ip))
+        return ads
     ips = []
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -63,7 +137,52 @@ def get_lan_ips():
                 ips.append(ip)
     except OSError:
         pass
-    return [ip for ip in ips if not ip.startswith("127.")]
+    return [("本机", ip) for ip in ips if not ip.startswith("127.")]
+
+
+def get_lan_ips():
+    """返回本机所有非回环 IPv4 地址，首个为主用地址。"""
+    return [ip for _, ip in get_lan_ads()]
+
+
+# 目录体积缓存：{路径: (目录 mtime, (总字节, 文件数), 计算时间)}
+_SIZE_CACHE = {}
+_SIZE_LOCK = threading.Lock()
+
+
+def dir_summary(path, ttl=30):
+    """递归统计目录总大小与文件数，结果缓存 ttl 秒。"""
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return 0, 0
+    now = time.time()
+    with _SIZE_LOCK:
+        hit = _SIZE_CACHE.get(path)
+    if hit and hit[0] == mtime and now - hit[2] < ttl:
+        return hit[1]
+
+    total = 0
+    count = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                            count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    with _SIZE_LOCK:
+        _SIZE_CACHE[path] = (mtime, (total, count), now)
+    return total, count
 
 
 def human_size(n):
@@ -179,7 +298,114 @@ a.zipbtn:hover{background:#333336}
 .foot{margin-top:30px;padding-top:16px;border-top:1px solid #f0f0f2;
       font-size:11px;color:#a1a1a6;line-height:1.8}
 .foot a{color:#6e6e73;text-decoration:none}
+#dlbox{position:fixed;right:22px;bottom:22px;width:330px;display:none;z-index:9;
+       background:#fff;border:1px solid #e5e5ea;border-radius:14px;padding:16px 18px 14px;
+       box-shadow:0 2px 6px rgba(0,0,0,.04),0 16px 40px rgba(0,0,0,.10)}
+.dlhead{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+#dlname{flex:1;font-size:13px;font-weight:500;color:#1d1d1f;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap}
+#dlcancel{border:1px solid #e5e5ea;background:#fff;color:#1d1d1f;font-size:12px;
+          padding:3px 10px;border-radius:7px;cursor:pointer;font-family:inherit}
+#dlcancel:hover{background:#f5f5f7}
+.dlbarwrap{height:6px;background:#f0f0f2;border-radius:3px;overflow:hidden}
+#dlbar{height:100%;width:0;background:#1d1d1f;border-radius:3px;transition:width .2s linear}
+.dlbarwrap.indet #dlbar{width:32%;animation:indet 1.2s ease-in-out infinite}
+@keyframes indet{0%{margin-left:-32%}100%{margin-left:100%}}
+#dlinfo{margin-top:10px;font-size:12px;color:#86868b;font-variant-numeric:tabular-nums}
 """
+
+DOWNLOAD_BOX = """
+<div id="dlbox">
+  <div class="dlhead"><span id="dlname">文件</span>
+  <button id="dlcancel" onclick="dlCancel()">取消</button></div>
+  <div class="dlbarwrap" id="dlwrap"><div id="dlbar"></div></div>
+  <div id="dlinfo">正在连接…</div>
+</div>
+"""
+
+DOWNLOAD_JS = """<script>
+(function(){
+  var box=document.getElementById('dlbox');
+  if(!box) return;
+  var bar=document.getElementById('dlbar'), wrap=document.getElementById('dlwrap');
+  var nameEl=document.getElementById('dlname'), infoEl=document.getElementById('dlinfo');
+  var ctrl=null;
+
+  function fmt(n){
+    var u=['B','KB','MB','GB','TB'], i=0;
+    while(n>=1024 && i<4){ n=n/1024; i++; }
+    return (i ? n.toFixed(1) : Math.round(n)) + ' ' + u[i];
+  }
+  function dur(s){
+    if(!isFinite(s) || s<1) return '不到 1 秒';
+    if(s<60) return Math.round(s)+' 秒';
+    var m=Math.floor(s/60), r=Math.round(s%60);
+    if(m<60) return m+' 分 '+r+' 秒';
+    return Math.floor(m/60)+' 小时 '+(m%60)+' 分';
+  }
+  function hide(){ box.style.display='none'; }
+
+  window.dlCancel=function(){
+    if(ctrl){ try{ ctrl.abort(); }catch(e){} }
+    hide();
+  };
+
+  window.dl=function(ev){
+    var a=ev.currentTarget || ev.srcElement;
+    if(ev.preventDefault){ ev.preventDefault(); } else { ev.returnValue=false; }
+    var url=a.getAttribute('href'), fname=a.getAttribute('data-name') || 'download';
+    if(!window.fetch || !window.AbortController || !window.ReadableStream){
+      window.location.href=url; return false;
+    }
+    if(ctrl){ try{ ctrl.abort(); }catch(e){} }
+    ctrl=new AbortController();
+    nameEl.textContent=fname;
+    bar.style.width='0%'; wrap.className='dlbarwrap';
+    infoEl.textContent='正在连接…'; box.style.display='block';
+    var spd=0, lastT=0, lastB=0, got=0, total=0;
+
+    fetch(url,{cache:'no-store', signal:ctrl.signal}).then(function(resp){
+      if(!resp.ok) throw new Error('HTTP '+resp.status);
+      total=parseInt(resp.headers.get('Content-Length')||'0',10);
+      if(total>800*1024*1024){ hide(); window.location.href=url; return null; }
+      if(!total) wrap.className='dlbarwrap indet';
+      var reader=resp.body.getReader(), chunks=[];
+      lastT=Date.now();
+      function step(){
+        return reader.read().then(function(r){
+          if(r.done) return chunks;
+          chunks.push(r.value); got+=r.value.length;
+          var now=Date.now(), dt=(now-lastT)/1000;
+          if(dt>0.25){ spd=(got-lastB)/dt; lastT=now; lastB=got; }
+          if(total) bar.style.width=Math.min(100, got/total*100).toFixed(1)+'%';
+          var txt=fmt(got);
+          if(total) txt+=' / '+fmt(total);
+          if(spd>0){
+            txt+=' · '+fmt(spd)+'/s';
+            if(total) txt+=' · 剩余 '+dur((total-got)/spd);
+          }
+          infoEl.textContent=txt;
+          return step();
+        });
+      }
+      return step();
+    }).then(function(chunks){
+      if(!chunks) return;
+      var blob=new Blob(chunks), a2=document.createElement('a');
+      a2.href=URL.createObjectURL(blob);
+      a2.download=fname;
+      document.body.appendChild(a2); a2.click(); a2.remove();
+      setTimeout(function(){ URL.revokeObjectURL(a2.href); }, 20000);
+      hide();
+    }).catch(function(err){
+      if(err && err.name==='AbortError'){ hide(); return; }
+      hide(); window.location.href=url;
+    });
+    return false;
+  };
+})();
+</script>"""
+
 
 FILE_PAGE = Template(
     """<!DOCTYPE html>
@@ -190,12 +416,12 @@ FILE_PAGE = Template(
   <div class="brand">$brand_inner</div>
   <h1>$title</h1>
   <div class="meta">文件大小 $size &nbsp;·&nbsp; 支持断点续传</div>
-  <a class="btn" href="/download">下载文件</a>
+  <a class="btn" href="/download" data-name="$filename" onclick="return dl(event)">下载文件</a>
   <div class="hint">直链地址：<code>http://$host/download</code><br>
   可复制到迅雷、IDM 等下载工具使用。</div>
   <div class="foot">$app $version &nbsp;·&nbsp; 作者 $author &nbsp;·&nbsp;
   <a href="mailto:$email">$email</a></div>
-</div></body></html>"""
+</div>$dlbox$js</body></html>"""
 )
 
 DIR_PAGE = Template(
@@ -210,11 +436,11 @@ DIR_PAGE = Template(
   <div class="crumb">$crumb</div>
   $zipbar
   $table
-  <div class="hint">点击文件夹可继续浏览子目录，点击「下载」直接获取文件，支持断点续传；<br>
+  <div class="hint">点击文件夹可继续浏览子目录，点击「下载」会显示进度、速度和剩余时间；<br>
   需要整份拿走时点上方「打包下载当前目录」。</div>
   <div class="foot">$app $version &nbsp;·&nbsp; 作者 $author &nbsp;·&nbsp;
   <a href="mailto:$email">$email</a></div>
-</div></body></html>"""
+</div>$dlbox$js</body></html>"""
 )
 
 
@@ -382,6 +608,9 @@ class ShareServer:
                     title=escape(server.name),
                     size=size,
                     host=self.headers.get("Host", "本机IP:%d" % server.port),
+                    filename=escape(server.name),
+                    dlbox=DOWNLOAD_BOX,
+                    js=DOWNLOAD_JS,
                 ).encode("utf-8")
                 self._send_html(head_only, body)
                 server.log("访问主页  %s" % self.client_address[0])
@@ -427,14 +656,21 @@ class ShareServer:
                             href = "/browse?p=%s" % quote(
                                 (rel + "/" + entry.name).strip("/"), safe=""
                             )
+                            dsize, dcount = dir_summary(entry.path)
+                            size_text = (
+                                "%s · %d 个文件" % (human_size(dsize), dcount)
+                                if dcount
+                                else "空文件夹"
+                            )
                             rows.append(
                                 '<tr><td class="n"><a href="%s">'
                                 '<span class="dir">▸</span>%s</a></td>'
-                                '<td class="s">文件夹</td><td class="t">%s</td>'
+                                '<td class="s">%s</td><td class="t">%s</td>'
                                 '<td class="a"></td></tr>'
                                 % (
                                     href,
                                     escape(entry.name),
+                                    size_text,
                                     time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.stat().st_mtime)),
                                 )
                             )
@@ -449,13 +685,15 @@ class ShareServer:
                             rows.append(
                                 '<tr><td class="n"><a href="%s">%s</a></td>'
                                 '<td class="s">%s</td><td class="t">%s</td>'
-                                '<td class="a"><a class="dl" href="%s">下载</a></td></tr>'
+                                '<td class="a"><a class="dl" href="%s" data-name="%s" '
+                                'onclick="return dl(event)">下载</a></td></tr>'
                                 % (
                                     href,
                                     escape(entry.name),
                                     human_size(size),
                                     time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),
                                     href,
+                                    escape(entry.name),
                                 )
                             )
                     except OSError:
@@ -482,9 +720,11 @@ class ShareServer:
                     )
 
                 title = "共享目录" if not rel else rel.strip("/").split("/")[-1]
+                dsize, dcount = dir_summary(target)
                 zipbar = (
-                    '<a class="zipbtn" href="/zip?p=%s">打包下载当前目录（ZIP）</a>'
-                    % quote(rel.strip("/"), safe="")
+                    '<a class="zipbtn" href="/zip?p=%s" data-name="%s.zip" '
+                    'onclick="return dl(event)">打包下载当前目录（ZIP · 约 %s）</a>'
+                    % (quote(rel.strip("/"), safe=""), escape(title), human_size(dsize))
                 )
                 body = DIR_PAGE.substitute(
                     app=APP_NAME,
@@ -494,11 +734,13 @@ class ShareServer:
                     css=PAGE_CSS,
                     brand_inner=brand_html("局域网文件共享"),
                     title=escape(title),
-                    meta="当前目录 %d 个文件 &nbsp;·&nbsp; 合计 %s"
-                    % (file_count, human_size(total)),
+                    meta="当前目录共 %d 个文件 &nbsp;·&nbsp; 合计 %s（含子目录）"
+                    % (dcount, human_size(dsize)),
                     crumb="".join(parts),
                     zipbar=zipbar,
                     table=table,
+                    dlbox=DOWNLOAD_BOX,
+                    js=DOWNLOAD_JS,
                 ).encode("utf-8")
                 self._send_html(head_only, body)
                 server.log("浏览目录  %s  /%s" % (self.client_address[0], rel))
@@ -846,8 +1088,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("%s %s" % (APP_NAME, APP_VERSION))
         scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
-        self.geometry("%dx%d" % (int(840 * scale), int(560 * scale)))
-        self.minsize(int(780 * scale), int(520 * scale))
+        self.geometry("%dx%d" % (int(840 * scale), int(572 * scale)))
+        self.minsize(int(780 * scale), int(532 * scale))
         self.configure(bg=PAGE_BG)
         self._set_icon()
 
@@ -1038,17 +1280,21 @@ class App(tk.Tk):
             atexit.register(self._release)
             self._atexit_done = True
 
-        ips = get_lan_ips()
-        host = ips[0] if ips else "127.0.0.1"
+        ads = get_lan_ads()
+        host = ads[0][1] if ads else "127.0.0.1"
         if server.is_dir:
             self.link_var.set("http://%s:%d/" % (host, port))
             self.link_caption.configure(text="分享直链 · 可浏览全部内容，也可一键打包下载")
         else:
             self.link_var.set("http://%s:%d/download" % (host, port))
             self.link_caption.configure(text="分享直链 · 对方浏览器直接下载")
-        others = ["http://%s:%d/" % (ip, port) for ip in ips[1:]]
+        others = [
+            "http://%s:%d/   (%s)" % (ip, port, name) for name, ip in ads[1:]
+        ]
+        if len(others) > 4:
+            others = others[:4] + ["…… 共 %d 个地址（ipconfig 全部可见）" % (len(others) + 1)]
         self.ips_label.configure(
-            text=("其他可用地址：\n" + "\n".join(others))
+            text=("其他网卡的地址：\n" + "\n".join(others))
             if others
             else ("本机地址：\nhttp://127.0.0.1:%d/" % port)
         )
