@@ -28,11 +28,11 @@ Nothing leaves your local network. No cloud, no accounts, no third-party service
   the estimated archive size.
 - **Download progress** — clicking download opens a floating card with percentage, speed and ETA.
 - **Multi-NIC friendly** — every adapter (Ethernet / Wi-Fi / virtual) is listed with its name; click a row to
-  copy that URL, or use "copy all".
+  copy that URL.
 - **Direct download links** — `http://your-ip:port/download`, `Range` requests supported, works with IDM / Thunder.
 - **One-click ZIP** — every directory page has "Download this folder (ZIP)", streamed on the fly with no temp file on disk.
 - **Chinese-friendly filenames** — `Content-Disposition` per RFC 5987, so non-ASCII names survive.
-- **Live stats** — transferred bytes, current speed, active/total connections; details in a separate log window.
+- **Live stats** — transferred bytes, current speed and online devices; details in a separate log window.
 - **Clean exit** — closing the window stops the listener and frees the port immediately.
 - **Portable** — one exe with the Python runtime and assets bundled, no installation required.
 - **UI** — Apple-style light cards and rounded controls, high-DPI aware.
@@ -152,6 +152,8 @@ can rebuild it yourself with the command above.
 
 ## Changelog
 
+- **1.5.2** — online-device counter (the web page heartbeats every 20 s, so a phone that opens the page shows
+  as 1 online); removed the "copy all" button, click a single row to copy.
 - **1.5.1** — all adapter addresses are listed (no truncation), click a row to copy it, "copy all" button,
   and the window grows to fit the list.
 - **1.5** — per-folder size and file count, estimated ZIP size, floating download card with progress /

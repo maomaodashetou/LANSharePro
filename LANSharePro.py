@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LANShare Pro 1.5.1
+"""LANShare Pro 1.5.2
 
 把一个任意类型的文件，或一个文件夹（含全部子目录），以 HTTP 直链形式共享到局域网，
 同网段的人用浏览器打开链接即可浏览、直接下载，支持断点续传（Range）。
@@ -32,7 +32,7 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 APP_NAME = "LANShare Pro"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 APP_AUTHOR = "陈科雄"
 APP_EMAIL = "kexiongchen@gmail.com"
 APP_REPO = "https://github.com/maomaodashetou/LANSharePro"
@@ -403,6 +403,12 @@ DOWNLOAD_JS = """<script>
     });
     return false;
   };
+
+  function ping(){
+    try { fetch('/ping', {cache:'no-store'}).catch(function(){}); } catch(e){}
+  }
+  ping();
+  setInterval(ping, 20000);
 })();
 </script>"""
 
@@ -507,6 +513,8 @@ class ShareServer:
         self.bytes_sent = 0
         self.active = 0
         self.total_hits = 0
+        self.viewers = {}
+        self.devices = set()
         self._lock = threading.Lock()
         self._httpd = None
         self._thread = None
@@ -516,6 +524,16 @@ class ShareServer:
     def add_bytes(self, n):
         with self._lock:
             self.bytes_sent += n
+
+    def touch(self, ip):
+        """记录访问来源：网页每 20 秒心跳一次，用来统计"在线设备"。"""
+        now = time.time()
+        with self._lock:
+            self.viewers[ip] = now
+            self.devices.add(ip)
+            if len(self.viewers) > 100:
+                for key in [k for k, t in self.viewers.items() if now - t > 600]:
+                    self.viewers.pop(key, None)
 
     def conn_open(self):
         with self._lock:
@@ -527,8 +545,11 @@ class ShareServer:
             self.active = max(0, self.active - 1)
 
     def snapshot(self):
+        """返回 (已发送字节, 在线设备数, 累计设备数)。"""
+        now = time.time()
         with self._lock:
-            return self.bytes_sent, self.active, self.total_hits
+            online = sum(1 for t in self.viewers.values() if now - t < 70)
+            return self.bytes_sent, online, len(self.devices)
 
     def log(self, text):
         self.events.put(("log", text))
@@ -561,10 +582,19 @@ class ShareServer:
                 parsed = urlparse(self.path)
                 path = unquote(parsed.path)
                 rel = parse_qs(parsed.query).get("p", [""])[0]
+                server.touch(self.client_address[0])
 
                 if path == "/favicon.ico":
                     self.send_response(204)
                     self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+
+                if path == "/ping":
+                    # 网页的心跳，用来统计在线设备数
+                    self.send_response(204)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     return
 
@@ -899,6 +929,7 @@ class ShareServer:
 
 # --------------------------------------------------------------------------- 界面
 PAGE_BG = "#F5F5F7"
+IPS_CAPTION = "其他网卡的地址 · 点任意一行复制"
 CARD_BG = "#FFFFFF"
 BORDER = "#E5E5EA"
 FIELD_BG = "#F2F2F7"
@@ -1200,12 +1231,9 @@ class App(tk.Tk):
         caprow = tk.Frame(body2, bg=CARD_BG)
         caprow.pack(fill="x", pady=(12, 0))
         self.ips_caption = tk.Label(
-            caprow, text="其他网卡的地址", font=FONT_SMALL, bg=CARD_BG, fg=TEXT_MUTED
+            caprow, text=IPS_CAPTION, font=FONT_SMALL, bg=CARD_BG, fg=TEXT_MUTED
         )
         self.ips_caption.pack(side="left")
-        self.copy_all_btn = RoundedButton(caprow, "复制全部", self._copy_all_ips, height=24, min_width=66)
-        self.copy_all_btn.pack(side="right")
-        self.copy_all_btn.set_enabled(False)
 
         self.ips_box = tk.Text(
             body2, height=1, width=1, font=FONT_MONO, bg=CARD_BG, fg=TEXT_MUTED,
@@ -1221,7 +1249,7 @@ class App(tk.Tk):
         self._stat(stats, "状态", self.status_var).pack(side="left", padx=(0, 30))
         self._stat(stats, "已传输", self.sent_var).pack(side="left", padx=(0, 30))
         self._stat(stats, "实时速度", self.speed_var).pack(side="left", padx=(0, 30))
-        self._stat(stats, "在线/累计", self.conn_var).pack(side="left")
+        self._stat(stats, "在线设备/累计", self.conn_var).pack(side="left")
 
     def _stat(self, parent, title, var):
         box = tk.Frame(parent, bg=PAGE_BG)
@@ -1352,7 +1380,6 @@ class App(tk.Tk):
         self.ips_box.delete("1.0", "end")
         self.ips_box.insert("1.0", "\n".join(lines))
         self.ips_box.configure(state="disabled", height=max(1, min(12, len(lines))))
-        self.copy_all_btn.set_enabled(bool(urls))
 
     def _copy_line(self, event):
         if not self._ips_urls:
@@ -1363,12 +1390,6 @@ class App(tk.Tk):
             self._copy_text(self._ips_urls[row])
             self._flash("已复制  " + self._ips_urls[row])
         return "break"
-
-    def _copy_all_ips(self):
-        if not self._ips_urls:
-            return
-        self._copy_text("\n".join(self._ips_urls))
-        self._flash("已复制全部 %d 个地址" % len(self._ips_urls))
 
     def _copy_text(self, text):
         self.clipboard_clear()
@@ -1384,7 +1405,7 @@ class App(tk.Tk):
         self.ips_caption.configure(text=msg, fg=TEXT_MAIN)
 
         def restore():
-            self.ips_caption.configure(text="其他网卡的地址", fg=TEXT_MUTED)
+            self.ips_caption.configure(text=IPS_CAPTION, fg=TEXT_MUTED)
             self._flash_job = None
 
         self._flash_job = self.after(1800, restore)
