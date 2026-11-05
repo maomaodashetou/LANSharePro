@@ -27,6 +27,8 @@ Nothing leaves your local network. No cloud, no accounts, no third-party service
 - **Folder sizes at a glance** — each directory shows its total size and file count, and the ZIP button shows
   the estimated archive size.
 - **Download progress** — clicking download opens a floating card with percentage, speed and ETA.
+- **Multi-NIC friendly** — every adapter (Ethernet / Wi-Fi / virtual) is listed with its name; click a row to
+  copy that URL, or use "copy all".
 - **Direct download links** — `http://your-ip:port/download`, `Range` requests supported, works with IDM / Thunder.
 - **One-click ZIP** — every directory page has "Download this folder (ZIP)", streamed on the fly with no temp file on disk.
 - **Chinese-friendly filenames** — `Content-Disposition` per RFC 5987, so non-ASCII names survive.
@@ -150,6 +152,8 @@ can rebuild it yourself with the command above.
 
 ## Changelog
 
+- **1.5.1** — all adapter addresses are listed (no truncation), click a row to copy it, "copy all" button,
+  and the window grows to fit the list.
 - **1.5** — per-folder size and file count, estimated ZIP size, floating download card with progress /
   speed / ETA, and every NIC listed with its adapter name (physical adapters first).
 - **1.4** — Apple-style UI (rounded cards/buttons/inputs), light borders, author info in the log

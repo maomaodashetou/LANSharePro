@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LANShare Pro 1.5
+"""LANShare Pro 1.5.1
 
 把一个任意类型的文件，或一个文件夹（含全部子目录），以 HTTP 直链形式共享到局域网，
 同网段的人用浏览器打开链接即可浏览、直接下载，支持断点续传（Range）。
@@ -32,7 +32,7 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox
 
 APP_NAME = "LANShare Pro"
-APP_VERSION = "1.5"
+APP_VERSION = "1.5.1"
 APP_AUTHOR = "陈科雄"
 APP_EMAIL = "kexiongchen@gmail.com"
 APP_REPO = "https://github.com/maomaodashetou/LANSharePro"
@@ -1110,6 +1110,8 @@ class App(tk.Tk):
         self.conn_var = tk.StringVar(value="0 / 0")
 
         self._speed_samples = collections.deque(maxlen=20)
+        self._ips_urls = []
+        self._flash_job = None
         self._logo = None
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1195,11 +1197,23 @@ class App(tk.Tk):
         self.open_btn = RoundedButton(row3, "预览页面", self._open_page, min_width=86)
         self.open_btn.pack(side="left", padx=(8, 0))
 
-        self.ips_label = tk.Label(
-            body2, text="", font=FONT_SMALL, bg=CARD_BG, fg=TEXT_MUTED,
-            justify="left", anchor="w", wraplength=0,
+        caprow = tk.Frame(body2, bg=CARD_BG)
+        caprow.pack(fill="x", pady=(12, 0))
+        self.ips_caption = tk.Label(
+            caprow, text="其他网卡的地址", font=FONT_SMALL, bg=CARD_BG, fg=TEXT_MUTED
         )
-        self.ips_label.pack(fill="x", pady=(12, 0))
+        self.ips_caption.pack(side="left")
+        self.copy_all_btn = RoundedButton(caprow, "复制全部", self._copy_all_ips, height=24, min_width=66)
+        self.copy_all_btn.pack(side="right")
+        self.copy_all_btn.set_enabled(False)
+
+        self.ips_box = tk.Text(
+            body2, height=1, width=1, font=FONT_MONO, bg=CARD_BG, fg=TEXT_MUTED,
+            relief="flat", bd=0, highlightthickness=0, wrap="none", cursor="hand2",
+            padx=0, pady=0, state="disabled", spacing1=2, spacing3=2,
+        )
+        self.ips_box.pack(fill="x", pady=(4, 0))
+        self.ips_box.bind("<Button-1>", self._copy_line)
 
         # 状态
         stats = tk.Frame(self, bg=PAGE_BG)
@@ -1289,15 +1303,16 @@ class App(tk.Tk):
             self.link_var.set("http://%s:%d/download" % (host, port))
             self.link_caption.configure(text="分享直链 · 对方浏览器直接下载")
         others = [
-            "http://%s:%d/   (%s)" % (ip, port, name) for name, ip in ads[1:]
+            ("http://%s:%d/" % (ip, port), name) for name, ip in ads[1:]
         ]
-        if len(others) > 4:
-            others = others[:4] + ["…… 共 %d 个地址（ipconfig 全部可见）" % (len(others) + 1)]
-        self.ips_label.configure(
-            text=("其他网卡的地址：\n" + "\n".join(others))
-            if others
-            else ("本机地址：\nhttp://127.0.0.1:%d/" % port)
-        )
+        if others:
+            self._fill_ips(
+                ["%-26s %s" % (url, name) for url, name in others],
+                [url for url, _ in others],
+            )
+        else:
+            self._fill_ips(["本机地址  http://127.0.0.1:%d/" % port], ["http://127.0.0.1:%d/" % port])
+        self._fit_window()
         self.status_var.set("运行中")
         self.start_btn.set_enabled(False)
         self.stop_btn.set_enabled(True)
@@ -1329,6 +1344,60 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(url)
         self._write_log("已复制链接  %s" % url)
+
+    # -- 网卡地址列表（全部显示、点击即复制） --------------------------------
+    def _fill_ips(self, lines, urls):
+        self._ips_urls = list(urls)
+        self.ips_box.configure(state="normal")
+        self.ips_box.delete("1.0", "end")
+        self.ips_box.insert("1.0", "\n".join(lines))
+        self.ips_box.configure(state="disabled", height=max(1, min(12, len(lines))))
+        self.copy_all_btn.set_enabled(bool(urls))
+
+    def _copy_line(self, event):
+        if not self._ips_urls:
+            return "break"
+        index = self.ips_box.index("@%d,%d" % (event.x, event.y))
+        row = int(index.split(".")[0]) - 1
+        if 0 <= row < len(self._ips_urls):
+            self._copy_text(self._ips_urls[row])
+            self._flash("已复制  " + self._ips_urls[row])
+        return "break"
+
+    def _copy_all_ips(self):
+        if not self._ips_urls:
+            return
+        self._copy_text("\n".join(self._ips_urls))
+        self._flash("已复制全部 %d 个地址" % len(self._ips_urls))
+
+    def _copy_text(self, text):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _flash(self, msg):
+        if self._flash_job:
+            try:
+                self.after_cancel(self._flash_job)
+            except Exception:
+                pass
+
+        self.ips_caption.configure(text=msg, fg=TEXT_MAIN)
+
+        def restore():
+            self.ips_caption.configure(text="其他网卡的地址", fg=TEXT_MUTED)
+            self._flash_job = None
+
+        self._flash_job = self.after(1800, restore)
+
+    def _fit_window(self):
+        """按内容自动调整窗口高度，网卡多时也不会被裁掉。"""
+        self.update_idletasks()
+        scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
+        need = self.winfo_reqheight()
+        max_h = self.winfo_screenheight() - int(90 * scale)
+        height = max(int(572 * scale), min(need + int(6 * scale), max_h))
+        if abs(self.winfo_height() - height) > 2:
+            self.geometry("%dx%d" % (self.winfo_width(), int(height)))
 
     def _open_page(self):
         if self.server is None:
